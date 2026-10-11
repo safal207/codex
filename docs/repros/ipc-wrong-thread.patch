@@ -1,0 +1,87 @@
+diff --git a/codex-rs/tui/src/app/tests.rs b/codex-rs/tui/src/app/tests.rs
+index a0aacd5b3..9328350d9 100644
+--- a/codex-rs/tui/src/app/tests.rs
++++ b/codex-rs/tui/src/app/tests.rs
+@@ -9973,0 +9974,82 @@ mod navigation_reconnect;
++
++// Proposed regression tests for PR #18 head
++// 00ae96124babb37e25f77d568858c693ea9a2afd.
++// STATUS: independently compiled on Linux with Rust 1.95.0; witness PASSED and
++// intended safe-behavior assertion FAILED on the pinned PR head (2026-10-11).
++// Append these tests to codex-rs/tui/src/app/tests.rs in an isolated checkout.
++// They reuse make_test_app_with_channels and test_thread_session from that file.
++// They exercise real AppEvent dispatch and ChatWidget submission, not a real socket.
++// The event is precisely the event A's endpoint emits; its target is absent.
++// Run witness: cd codex-rs && cargo test -p codex-tui ipc_wrong_thread_witness -- --nocapture
++// Run intended safe behavior (expected FAIL on pinned PR):
++// cd codex-rs && cargo test -p codex-tui ipc_wrong_thread_is_rejected -- --nocapture
++
++#[tokio::test]
++async fn ipc_wrong_thread_witness() -> Result<()> {
++    let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
++    let primary_a = ThreadId::new();
++    let displayed_b = ThreadId::new();
++    app.config.ipc_enabled = false; // no listener required for this dispatch unit test
++    app.primary_thread_id = Some(primary_a);
++    app.active_thread_id = Some(displayed_b);
++    app.chat_widget.handle_thread_session(test_thread_session(
++        displayed_b, test_path_buf("/tmp/ipc-review-b"),
++    ));
++    while events.try_recv().is_ok() {}
++    while ops.try_recv().is_ok() {}
++    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
++    let mut tui = crate::tui::test_support::make_test_tui()?;
++    let (reply, response) = tokio::sync::oneshot::channel();
++    let marker = "IPC_REVIEW_MARKER";
++    app.handle_event(&mut tui, &mut server, AppEvent::SendMessageReceived {
++        request: codex_send::SendRequest {
++            id: "primary-a-request-1".to_string(),
++            text: marker.to_string(),
++        }, reply,
++    }).await?;
++    assert_eq!(response.await?, codex_send::SendResponse::Submitted);
++    let op = std::iter::from_fn(|| ops.try_recv().ok())
++        .find(|op| matches!(op, Op::UserTurn { .. }))
++        .expect("request from A's endpoint generated a UserTurn on B's widget");
++    let Op::UserTurn { items, .. } = op else { unreachable!() };
++    assert!(items.iter().any(|item| matches!(item,
++        codex_app_server_protocol::UserInput::Text { text, .. } if text == marker)));
++    let history_target = std::iter::from_fn(|| events.try_recv().ok())
++        .find_map(|event| match event {
++            AppEvent::AppendMessageHistoryEntry { thread_id, text } if text == marker => Some(thread_id),
++            _ => None,
++        }).expect("ordinary message history was written for displayed thread");
++    assert_eq!(history_target, displayed_b);
++    assert_ne!(history_target, primary_a);
++    server.shutdown().await?;
++    Ok(())
++}
++
++#[tokio::test]
++async fn ipc_wrong_thread_is_rejected() -> Result<()> {
++    let (mut app, _events, mut ops) = make_test_app_with_channels().await;
++    let primary_a = ThreadId::new();
++    let displayed_b = ThreadId::new();
++    app.config.ipc_enabled = false;
++    app.primary_thread_id = Some(primary_a);
++    app.active_thread_id = Some(displayed_b);
++    app.chat_widget.handle_thread_session(test_thread_session(
++        displayed_b, test_path_buf("/tmp/ipc-review-b"),
++    ));
++    while ops.try_recv().is_ok() {}
++    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
++    let mut tui = crate::tui::test_support::make_test_tui()?;
++    let (reply, response) = tokio::sync::oneshot::channel();
++    app.handle_event(&mut tui, &mut server, AppEvent::SendMessageReceived {
++        request: codex_send::SendRequest {
++            id: "primary-a-request-1".to_string(),
++            text: "IPC_REVIEW_MARKER".to_string(),
++        }, reply,
++    }).await?;
++    assert!(matches!(response.await?, codex_send::SendResponse::Rejected { .. }),
++        "A's endpoint must not submit to B's displayed widget");
++    assert!(!std::iter::from_fn(|| ops.try_recv().ok())
++        .any(|op| matches!(op, Op::UserTurn { .. })));
++    server.shutdown().await?;
++    Ok(())
++}
