@@ -1224,14 +1224,33 @@ impl ChatWidget {
     }
 
     fn add_boxed_history(&mut self, cell: Box<dyn HistoryCell>) {
+        self.add_boxed_history_with_ipc_scope(cell, None);
+    }
+
+    fn add_boxed_history_with_ipc_scope(
+        &mut self,
+        cell: Box<dyn HistoryCell>,
+        ipc_scope: Option<crate::app_event::SendMessageScope>,
+    ) {
         let Err(cell) = self.absorb_activity_detail(cell) else {
             return;
         };
         if let Some(active) = self.take_history_insertion_prefix(cell.as_ref()) {
-            self.app_event_tx.send(AppEvent::InsertHistoryCell(active));
+            self.send_history_cell_with_ipc_scope(active, ipc_scope);
             self.request_pending_usage_output_insertion();
         }
-        self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+        self.send_history_cell_with_ipc_scope(cell, ipc_scope);
+    }
+
+    fn send_history_cell_with_ipc_scope(
+        &self,
+        cell: Box<dyn HistoryCell>,
+        ipc_scope: Option<crate::app_event::SendMessageScope>,
+    ) {
+        self.app_event_tx.send(match ipc_scope {
+            Some(scope) => AppEvent::InsertIpcHistoryCell { scope, cell },
+            None => AppEvent::InsertHistoryCell(cell),
+        });
     }
 
     fn take_history_insertion_prefix(
@@ -1381,6 +1400,14 @@ impl ChatWidget {
     }
 
     fn on_user_message_display(&mut self, display: UserMessageDisplay) {
+        self.on_user_message_display_with_ipc_scope(display, None);
+    }
+
+    fn on_user_message_display_with_ipc_scope(
+        &mut self,
+        display: UserMessageDisplay,
+        ipc_scope: Option<crate::app_event::SendMessageScope>,
+    ) {
         self.transcript.last_status_copy_targets = None;
         self.last_rendered_user_message_display = Some(display.clone());
         self.last_rendered_user_message_client_id = None;
@@ -1389,12 +1416,15 @@ impl ChatWidget {
             || !display.local_images.is_empty()
             || !display.remote_image_urls.is_empty()
         {
-            self.add_to_history(history_cell::new_user_prompt(
-                display.message,
-                display.text_elements,
-                display.local_images,
-                display.remote_image_urls,
-            ));
+            self.add_boxed_history_with_ipc_scope(
+                Box::new(history_cell::new_user_prompt(
+                    display.message,
+                    display.text_elements,
+                    display.local_images,
+                    display.remote_image_urls,
+                )),
+                ipc_scope,
+            );
         }
     }
 
@@ -1834,6 +1864,17 @@ impl ChatWidget {
     where
         T: Into<AppCommand>,
     {
+        self.submit_op_with_ipc_scope(op, None)
+    }
+
+    fn submit_op_with_ipc_scope<T>(
+        &mut self,
+        op: T,
+        ipc_scope: Option<crate::app_event::SendMessageScope>,
+    ) -> bool
+    where
+        T: Into<AppCommand>,
+    {
         let op: AppCommand = op.into();
         if self.rejects_misalignment_policy_op(&op) {
             return false;
@@ -1882,7 +1923,10 @@ impl ChatWidget {
                 }
             }
             CodexOpTarget::AppEvent => {
-                return self.app_event_tx.enqueue_codex_op(op);
+                return match ipc_scope {
+                    Some(scope) => self.app_event_tx.enqueue_ipc_thread_op(scope, op),
+                    None => self.app_event_tx.enqueue_codex_op(op),
+                };
             }
         }
         true

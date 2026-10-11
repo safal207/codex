@@ -31,6 +31,10 @@ impl App {
         app_server: &mut AppServerSession,
         event: AppEvent,
     ) -> Result<AppRunControl> {
+        let ipc_submission_scope = match &event {
+            AppEvent::SubmitIpcThreadOp { scope, .. } => Some(*scope),
+            _ => None,
+        };
         let from_agents_overview = matches!(event, AppEvent::ForkAgentsOverviewThreadReady { .. });
         let event = if let AppEvent::ForkAgentsOverviewThreadReady { thread_id } = event {
             if self.current_displayed_thread_id() != Some(thread_id)
@@ -874,8 +878,19 @@ impl App {
                 self.transcript_view.jump_to_latest();
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::FollowIpcTranscript { scope } => {
+                if self.send_message_scope_is_current(scope) {
+                    self.transcript_view.jump_to_latest();
+                    tui.frame_requester().schedule_frame();
+                }
+            }
             AppEvent::InsertHistoryCell(cell) => {
                 self.insert_history_cell(tui, cell);
+            }
+            AppEvent::InsertIpcHistoryCell { scope, cell } => {
+                if self.send_message_scope_is_current(scope) {
+                    self.insert_history_cell(tui, cell);
+                }
             }
             AppEvent::TurnTipReady { thread_id, turn_id } => {
                 self.turn_tips.ready(thread_id, &turn_id, self.transcript_cells.last());
@@ -1039,7 +1054,19 @@ impl App {
             AppEvent::ImagesPrepared(id) => {
                 self.chat_widget.on_images_prepared(id);
             }
-            AppEvent::CodexOp(mut op) => {
+            AppEvent::CodexOp(mut op) | AppEvent::SubmitIpcThreadOp { mut op, .. } => {
+                if ipc_submission_scope
+                    .is_some_and(|scope| !self.send_message_scope_is_current(scope))
+                {
+                    let scope = ipc_submission_scope.expect("only scoped IPC operations reach this guard");
+                    tracing::warn!(
+                        intended_thread = %scope.thread_id,
+                        endpoint_generation = %scope.endpoint_generation,
+                        active_thread = ?self.active_thread_id,
+                        "cancelled accepted IPC input because its endpoint or displayed thread changed"
+                    );
+                    return Ok(AppRunControl::Continue);
+                }
                 if let AppCommand::OverrideTurnContext {
                     cwd,
                     approval_policy,
@@ -1114,7 +1141,10 @@ impl App {
                 if matches!(&op, AppCommand::Interrupt) {
                     self.chat_widget.apply_accepted_interrupt_cleanup();
                 }
-                let result = self.submit_active_thread_op(app_server, op).await;
+                let result = match ipc_submission_scope {
+                    Some(scope) => self.submit_thread_op(app_server, scope.thread_id, op).await,
+                    None => self.submit_active_thread_op(app_server, op).await,
+                };
                 if result.is_err()
                     && let Some(delivery_id) = realtime_speech_delivery_id
                 {
@@ -1238,8 +1268,14 @@ impl App {
             AppEvent::SubmitThreadOp { thread_id, op } => {
                 self.submit_thread_op(app_server, thread_id, op).await?;
             }
-            AppEvent::SendMessageReceived { request, reply } => {
-                let response = self.chat_widget.submit_sent_message(request);
+            AppEvent::SendMessageReceived { scope, request, reply } => {
+                let response = if self.send_message_scope_is_current(scope) {
+                    self.chat_widget.submit_sent_message(scope, request)
+                } else {
+                    codex_send::SendResponse::Rejected {
+                        message: "the IPC endpoint is stale or its thread is not displayed".to_string(),
+                    }
+                };
                 // A sender that gave up waiting has already closed its side.
                 let _ = reply.send(response);
             }

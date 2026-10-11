@@ -284,6 +284,14 @@ pub(crate) struct AgentPickerThreadRefresh {
     pub(crate) archived_thread_ids: std::collections::HashSet<ThreadId>,
 }
 
+/// A local IPC message belongs to one thread and one binding of its endpoint.
+/// The generation changes even when the same thread is resumed after a reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SendMessageScope {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) endpoint_generation: uuid::Uuid,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, IntoStaticStr)]
 pub(crate) enum AppEvent {
@@ -422,8 +430,15 @@ pub(crate) enum AppEvent {
     /// A `codex send` message arrived on the session's socket. The reply
     /// carries whether it was submitted, queued, or rejected.
     SendMessageReceived {
+        scope: SendMessageScope,
         request: codex_send::SendRequest,
         reply: tokio::sync::oneshot::Sender<codex_send::SendResponse>,
+    },
+
+    /// An IPC user turn retains its endpoint identity until the operation is dispatched.
+    SubmitIpcThreadOp {
+        scope: SendMessageScope,
+        op: AppCommand,
     },
 
     /// Confirm retrying a safety-buffered turn with the server-selected model.
@@ -1158,7 +1173,16 @@ pub(crate) enum AppEvent {
     /// Background output and later refreshes must preserve the user's reading position.
     FollowTranscript,
 
+    FollowIpcTranscript {
+        scope: SendMessageScope,
+    },
+
     InsertHistoryCell(Box<dyn HistoryCell>),
+
+    InsertIpcHistoryCell {
+        scope: SendMessageScope,
+        cell: Box<dyn HistoryCell>,
+    },
     /// FIFO barrier after the completed turn's history insertions.
     TurnTipReady {
         thread_id: ThreadId,

@@ -311,6 +311,10 @@ mod usage;
 mod worktree_picker;
 
 pub(crate) use helpers::make_chatwidget_manual_with_sender;
+pub(crate) fn configure_app_event_test_thread(chat: &mut ChatWidget, thread_id: ThreadId) {
+    chat.thread_id = Some(thread_id);
+    chat.codex_op_target = CodexOpTarget::AppEvent;
+}
 pub(crate) use helpers::set_chatgpt_auth;
 pub(crate) use helpers::set_fast_mode_test_catalog;
 pub(super) use helpers::*;

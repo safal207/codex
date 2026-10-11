@@ -203,13 +203,32 @@ impl ChatWidget {
                 })
         } else {
             // Reply envelopes must remain separate messages so other clients can read them.
-            let count = self
+            let mut count = self
                 .input_queue
                 .rejected_steers_queue
                 .iter()
                 .position(|message| crate::async_question_reply::parse(&message.text).is_some())
                 .map(|index| index.max(/*other*/ 1))
                 .unwrap_or(self.input_queue.rejected_steers_queue.len());
+            // IPC steers must keep their endpoint identity. Never merge them with
+            // manual input, answers, or requests from a different endpoint binding.
+            let first_source = self
+                .input_queue
+                .rejected_steer_sources
+                .front()
+                .copied()
+                .unwrap_or(UserMessageSource::Prompt);
+            if first_source.ipc_scope().is_some() {
+                count = 1;
+            } else if let Some(index) = self
+                .input_queue
+                .rejected_steer_sources
+                .iter()
+                .take(count)
+                .position(|source| source.ipc_scope().is_some())
+            {
+                count = index;
+            }
             let rejected_messages = self
                 .input_queue
                 .rejected_steers_queue
@@ -220,7 +239,9 @@ impl ChatWidget {
                 .rejected_steer_sources
                 .drain(..count.min(self.input_queue.rejected_steer_sources.len()))
                 .collect::<Vec<_>>();
-            let source = if !rejected_messages.is_empty()
+            let source = if first_source.ipc_scope().is_some() {
+                first_source
+            } else if !rejected_messages.is_empty()
                 && sources.len() == rejected_messages.len()
                 && sources
                     .iter()
@@ -248,7 +269,14 @@ impl ChatWidget {
             Some((
                 QueuedUserMessage {
                     source,
-                    ..QueuedUserMessage::from(message)
+                    ..QueuedUserMessage::new(
+                        message,
+                        if source.ipc_scope().is_some() {
+                            QueuedInputAction::Literal
+                        } else {
+                            QueuedInputAction::Plain
+                        },
+                    )
                 },
                 history_record,
             ))
@@ -354,11 +382,11 @@ impl ChatWidget {
                 .pending_steers
                 .drain(..)
                 .collect::<Vec<_>>();
-            if pending_steers
-                .iter()
-                .any(|pending| pending.source == UserMessageSource::QuestionAnswer)
-            {
-                // Keep answers intact when an interrupt retries uncommitted input.
+            if pending_steers.iter().any(|pending| {
+                pending.source == UserMessageSource::QuestionAnswer
+                    || pending.source.ipc_scope().is_some()
+            }) {
+                // Keep answers and IPC endpoint identities intact when an interrupt retries input.
                 for pending in pending_steers {
                     self.input_queue
                         .rejected_steers_queue

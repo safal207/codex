@@ -64,6 +64,20 @@ pub(super) enum ShellEscapePolicy {
 pub(super) enum UserMessageSource {
     Prompt,
     QuestionAnswer,
+    Ipc(crate::app_event::SendMessageScope),
+}
+
+impl UserMessageSource {
+    pub(super) fn is_prompt(self) -> bool {
+        matches!(self, Self::Prompt | Self::Ipc(_))
+    }
+
+    pub(super) fn ipc_scope(self) -> Option<crate::app_event::SendMessageScope> {
+        match self {
+            Self::Ipc(scope) => Some(scope),
+            Self::Prompt | Self::QuestionAnswer => None,
+        }
+    }
 }
 
 /// Whether a recovered message can be submitted without risking a duplicate.

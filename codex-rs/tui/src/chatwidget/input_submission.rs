@@ -167,12 +167,25 @@ impl ChatWidget {
         prepared_images: Option<Vec<UserInput>>,
     ) -> UserMessageSubmissionOutcome {
         self.bottom_pane.dismiss_composer_sparkle();
+        // Queue/recovery paths must never discard an IPC message's destination or literalness.
+        let ipc_scope = source.ipc_scope();
+        if ipc_scope.is_some_and(|scope| {
+            self.thread_id
+                .is_some_and(|thread_id| thread_id != scope.thread_id)
+        }) {
+            return UserMessageSubmissionOutcome::REJECTED;
+        }
+        let shell_escape_policy = if ipc_scope.is_some() {
+            ShellEscapePolicy::Disallow
+        } else {
+            shell_escape_policy
+        };
         if self.has_misalignment_policy_violation() {
             return UserMessageSubmissionOutcome::REJECTED;
         }
         self.empty_state_animation.borrow_mut().dismiss();
         if self.input_queue.rate_limit_recovery_pending || self.pending_image_submission.is_some() {
-            let model_prompt = source == UserMessageSource::Prompt
+            let model_prompt = source.is_prompt()
                 && (shell_escape_policy == ShellEscapePolicy::Disallow
                     || !user_message.text.starts_with('!'));
             // A prepared submission was accepted before any messages queued behind it.
@@ -204,7 +217,7 @@ impl ChatWidget {
             return UserMessageSubmissionOutcome::QUEUED;
         }
         if !self.is_session_configured() {
-            let model_prompt = source == UserMessageSource::Prompt
+            let model_prompt = source.is_prompt()
                 && (shell_escape_policy == ShellEscapePolicy::Disallow
                     || !user_message.text.starts_with('!'));
             tracing::warn!("cannot submit user message before session is configured; queueing");
@@ -511,16 +524,16 @@ impl ChatWidget {
         let render_before_submit =
             render_in_history && matches!(&self.codex_op_target, CodexOpTarget::AppEvent);
         if render_before_submit {
-            self.on_user_message_display(user_message_display_for_history(
-                submitted_message.clone(),
-                &history_record,
-            ));
+            self.on_user_message_display_with_ipc_scope(
+                user_message_display_for_history(submitted_message.clone(), &history_record),
+                ipc_scope,
+            );
         }
 
-        if !self.submit_op(op.clone()) {
+        if !self.submit_op_with_ipc_scope(op.clone(), ipc_scope) {
             return UserMessageSubmissionOutcome::REJECTED;
         }
-        if source == UserMessageSource::Prompt {
+        if source.is_prompt() {
             self.bottom_pane.clear_pending_questions();
         }
         self.dismiss_backend_banner_for_new_turn();
@@ -577,10 +590,10 @@ impl ChatWidget {
             self.safety_buffering_prompt = Some(submitted_message.clone());
             self.safety_buffering_source = source;
             if !render_before_submit {
-                self.on_user_message_display(user_message_display_for_history(
-                    submitted_message,
-                    &history_record,
-                ));
+                self.on_user_message_display_with_ipc_scope(
+                    user_message_display_for_history(submitted_message, &history_record),
+                    ipc_scope,
+                );
             }
         }
 
