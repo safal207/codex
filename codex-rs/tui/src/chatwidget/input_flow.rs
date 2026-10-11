@@ -68,7 +68,11 @@ impl ChatWidget {
                 {
                     return;
                 }
-                self.submit_or_queue_user_message(user_message, ShellEscapePolicy::Allow);
+                self.submit_or_queue_user_message(
+                    user_message,
+                    ShellEscapePolicy::Allow,
+                    UserMessageSource::Prompt,
+                );
             }
             InputResult::Queued {
                 text,
@@ -125,8 +129,12 @@ impl ChatWidget {
         &mut self,
         user_message: UserMessage,
         shell_escape_policy: ShellEscapePolicy,
+        source: UserMessageSource,
     ) -> UserMessageDisposition {
-        self.app_event_tx.send(AppEvent::FollowTranscript);
+        self.app_event_tx.send(match source.ipc_scope() {
+            Some(scope) => AppEvent::FollowIpcTranscript { scope },
+            None => AppEvent::FollowTranscript,
+        });
         let can_submit_now = self.is_session_configured()
             && !self.is_plan_streaming_in_tui()
             && !self.input_queue.submissions_paused()
@@ -148,7 +156,7 @@ impl ChatWidget {
                     user_message,
                     UserMessageHistoryRecord::UserMessageText,
                     shell_escape_policy,
-                    UserMessageSource::Prompt,
+                    source,
                 )
                 .disposition();
         }
@@ -156,12 +164,8 @@ impl ChatWidget {
             ShellEscapePolicy::Allow => QueuedInputAction::Plain,
             ShellEscapePolicy::Disallow => QueuedInputAction::Literal,
         };
-        if self.queue_user_message_with_options_and_source(
-            user_message,
-            action,
-            Vec::new(),
-            UserMessageSource::Prompt,
-        ) {
+        if self.queue_user_message_with_options_and_source(user_message, action, Vec::new(), source)
+        {
             UserMessageDisposition::Queued
         } else {
             UserMessageDisposition::Dropped
@@ -235,7 +239,7 @@ impl ChatWidget {
                                 )
                         })
                 });
-            let model_prompt = source == UserMessageSource::Prompt
+            let model_prompt = source.is_prompt()
                 && (action == QueuedInputAction::Literal
                     || action == QueuedInputAction::Plain && !user_message.text.starts_with('!')
                     || queued_slash_prompt);

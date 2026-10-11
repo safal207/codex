@@ -48,6 +48,14 @@ impl AppEventSender {
         self.enqueue_event(AppEvent::CodexOp(op))
     }
 
+    pub(crate) fn enqueue_ipc_thread_op(
+        &self,
+        scope: crate::app_event::SendMessageScope,
+        op: AppCommand,
+    ) -> bool {
+        self.enqueue_event(AppEvent::SubmitIpcThreadOp { scope, op })
+    }
+
     fn enqueue_event(&self, event: AppEvent) -> bool {
         // A parked voice owner keeps processing its session, but its UI and queued
         // typed work must not act on the visible session. Thread-scoped metadata still applies.

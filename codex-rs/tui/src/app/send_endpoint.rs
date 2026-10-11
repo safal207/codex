@@ -16,9 +16,11 @@ use tokio::task::JoinHandle;
 
 use super::App;
 use crate::app_event::AppEvent;
+use crate::app_event::SendMessageScope;
 
 pub(crate) struct SendEndpointTask {
     thread_id: ThreadId,
+    generation: uuid::Uuid,
     socket_path: PathBuf,
     /// Set once the task owns the socket. A task that lost the bind to another
     /// live session, or to a non-socket file, must not remove that path.
@@ -48,6 +50,20 @@ impl Drop for SendEndpointTask {
 }
 
 impl App {
+    /// Refuse delivery while another view is selected or an endpoint was reset/replaced.
+    /// A second check is required when a deferred user turn reaches the app event loop.
+    pub(super) fn send_message_scope_is_current(&self, scope: SendMessageScope) -> bool {
+        self.config.ipc_enabled
+            && self.primary_thread_id == Some(scope.thread_id)
+            && self.active_thread_id == Some(scope.thread_id)
+            && self.chat_widget.thread_id() == Some(scope.thread_id)
+            && self.send_endpoint.as_ref().is_some_and(|endpoint| {
+                endpoint.thread_id == scope.thread_id
+                    && endpoint.generation == scope.endpoint_generation
+                    && endpoint.bound.load(Ordering::Acquire)
+            })
+    }
+
     pub(super) fn bind_send_endpoint(&mut self, thread_id: ThreadId) {
         if !self.config.ipc_enabled {
             return;
@@ -72,6 +88,11 @@ impl App {
         let app_event_tx = self.app_event_tx.clone();
         let bound = Arc::new(AtomicBool::new(false));
         let bound_by_task = Arc::clone(&bound);
+        let generation = uuid::Uuid::new_v4();
+        let scope = SendMessageScope {
+            thread_id,
+            endpoint_generation: generation,
+        };
         let task = tokio::spawn(async move {
             if let Some(previous) = previous {
                 let _ = previous.await;
@@ -90,6 +111,7 @@ impl App {
                     async move {
                         let (reply_tx, reply_rx) = oneshot::channel();
                         app_event_tx.send(AppEvent::SendMessageReceived {
+                            scope,
                             request,
                             reply: reply_tx,
                         });
@@ -102,6 +124,7 @@ impl App {
         });
         self.send_endpoint = Some(SendEndpointTask {
             thread_id,
+            generation,
             socket_path,
             bound,
             task: Some(task),

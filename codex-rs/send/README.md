@@ -24,6 +24,14 @@ submitted when a regular turn can take it. Accepted does not mean the model has
 read the text: a steer becomes visible to the model at the same boundary as a
 steer typed in the TUI.
 
+The endpoint belongs to the session's primary thread. Delivery is rejected
+while a different thread is displayed. Requests and queued messages retain
+both that thread id and the endpoint's generation; switching threads or
+replacing the endpoint before submission can cancel an already accepted
+message. Return to the primary thread before sending, and check for agent
+processing or a response to confirm execution. The user-message echo can appear
+before dispatch. An acceptance reply is not a guarantee of model execution.
+
 Shell escapes (`!…`) and slash commands (`/…`) in a sent message are delivered
 as plain text, not executed. Images are not supported.
 
@@ -51,6 +59,20 @@ a UUID fits; a long `CODEX_HOME` does not, and the session logs
 A sender running inside a Codex sandbox with network disabled cannot reach the
 socket unless `$CODEX_HOME/ipc` is in that sandbox's `unix_sockets`
 allowlist.
+
+### Local sender trust
+
+Filesystem permissions and the Windows peer check restrict access by OS
+account, not by application. Another process running as the recipient's user
+can submit text that enters the ordinary user-turn pipeline. The wire protocol
+has no sender authentication or approval step. Thread and generation checks
+prevent accidental delivery into another session; they do not establish that
+the account owner authorized the message.
+
+Use this experimental fork only in an isolated account or environment without
+production credentials or valuable writable files. Keep IPC disabled when
+other processes under the same account are not trusted. Existing tool approval
+rules still apply, but do not make incoming text trustworthy.
 
 ## Wire format
 
